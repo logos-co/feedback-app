@@ -1,0 +1,29 @@
+{
+  "name": "feedback_ui",
+  "version": "0.1.0",
+  "type": "ui_qml",
+  "pluginType": "qml",
+  "author": "xAlisher",
+  "description": "Send feedback on Basecamp (quick form + questionnaire), sealed to the Feedback Desk over devnet.",
+  "category": "messaging",
+  "dependencies": [
+    "feedback_core",
+    "delivery_module"
+  ],
+  "capabilities": [],
+  "provides": [
+    {
+      "intent": "feedback.open",
+      "params": [
+        {
+          "name": "topic",
+          "type": "string",
+          "required": false,
+          "description": "Preselect the Quick-report topic (e.g. home)"
+        }
+      ]
+    }
+  ],
+  "icon": "feedback.png",
+  "view": "Main.qml"
+}
