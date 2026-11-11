@@ -1,11 +1,14 @@
-// feedback_ui — send feedback on Basecamp. Two forms (quick + questionnaire); each response is
-// sealed by feedback_core (crypto_box_seal to the Desk key) and published over devnet via
-// delivery_module. Built with the Logos design system; responsive at 390 / 700 / 1280.
+// feedback_ui: send feedback on Basecamp. Two forms (quick + questionnaire); each response is
+// sealed by feedback_core (crypto_box_seal to the Desk key) and published on the Logos Messaging
+// testnet (logos.test, cluster 2) via delivery_module. A send counts only once delivery confirms it,
+// and a node another app started on the wrong network or with RLN on is detected and explained
+// (net.js). Built with the Logos design system; responsive at 390 / 700 / 1280.
 import QtQuick 2.15
 import QtQuick.Layouts 1.15
 import QtQuick.LocalStorage 2.15
 import Logos.Controls
 import Logos.Theme
+import "net.js" as Net
 
 Rectangle {
     id: root
@@ -17,14 +20,9 @@ Rectangle {
     readonly property string quickTopic: "/logos-feedback/1/quick/json"
     readonly property string questTopic: "/logos-feedback/1/questionnaire/json"
     readonly property var topics: ["home","app","package-manager","node","wallet","delivery","messaging","onboarding","other"]
-    readonly property string appBuild: "0.1.0"
-    readonly property string nodeCfg: JSON.stringify({
-        logLevel:"ERROR", mode:"Core", preset:"logos.dev", relay:true, clusterId:2,
-        tcpPort:0, discv5UdpPort:0,
-        entryNodes:[
-          "/dns4/node-01.do-ams3.logos.test.status.im/tcp/30303/p2p/16Uiu2HAmQ9X2xDfPG3uL77V9piYDhjq14JhKCtcmNYsTMKNqrKCj",
-          "/dns4/node-02.gc-us-central1-a.logos.test.status.im/tcp/30303/p2p/16Uiu2HAmUuXhUW9bdJpzN1kfDziFiUZo4bszTk66cvr7uuyCHXR7"]
-    })
+    readonly property string appBuild: "0.2.0"
+    readonly property string nodeCfg: Net.nodeConfig()   // logos.test spelled out, no RLN send gate (#2)
+    readonly property int confirmTimeoutMs: 60000
 
     // ---- responsive ----
     readonly property bool compact: width < 600
@@ -33,7 +31,18 @@ Rectangle {
     // ---- state ----
     property string connState: "connecting"   // connecting | ready  (gates Send)
     property string deliveryStatus: "starting" // raw delivery_module state for the honest status badge
-    property string rlnState: "unknown"
+    property string rlnState: ""               // delivery rlnState name ("" until read)
+    // the node, as far as we can tell (#4)
+    property bool adopted: false               // another app created the node: its config, not ours
+    property int cluster: -1                   // from the node's ENR; 2 = logos.test
+    property bool unconfirmed: false           // a send on a gated node got no confirmation
+    property bool confirmedOnce: false         // delivery confirmed one of our sends on this node
+    property string netState: "checking"       // ok | checking | wrongNetwork | rlnSuspect | rlnBlocked
+    // sends waiting for delivery to confirm them (#3): requestId -> {payload, at}
+    property var inflight: ({})
+    property int inflightCount: 0
+    property int unconfirmedCount: 0
+    property string lastSend: ""               // sending | sent | saved | unconfirmed
     property int tab: 0                        // 0 quick, 1 questionnaire
     property bool sent: false
     property string note: ""
@@ -67,25 +76,45 @@ Rectangle {
             if (params && params.topic) root.presetTopic(String(params.topic))
             logos.respond(requestId, true, ({}), "")
         }
+        // delivery's per-request outcome (#3); data[0] is the requestId send() returned
+        function onModuleEventReceived(moduleName, eventName, data) {
+            if (moduleName !== "delivery_module") return
+            var id = data && data.length > 0 ? String(data[0]) : ""
+            if (eventName === "messagePropagated" || eventName === "messageSent") root.confirm(id)
+            else if (eventName === "messageError") root.failed(id, data && data.length > 2 ? String(data[2]) : "")
+        }
     }
 
-    // ---- delivery bring-up (adopt-or-create) ----
+    // ---- delivery bring-up (adopt-or-create) + what kind of node we got (#4) ----
     function bringUp() {
-        callMod("delivery_module", "createNode", [root.nodeCfg])  // "already initialized" -> adopt
+        var c = Net.unwrap(callMod("delivery_module", "createNode", [root.nodeCfg]))
+        if (!c.ok && Net.isAlreadyInitialized(c.error)) root.adopted = true   // someone else's config
         callMod("delivery_module", "start", [])
+    }
+    function reclassify() {
+        root.netState = Net.classify({ adopted: root.adopted, cluster: root.cluster, rln: root.rlnState,
+                                       unconfirmed: root.unconfirmed, confirmed: root.confirmedOnce })
     }
     Timer {
         interval: 1500; running: true; repeat: true
         onTriggered: {
-            var cs = callMod("delivery_module", "getConnectionStatus", [])
-            var v = cs ? (cs.value || cs.result || "") : ""
-            if (v) root.deliveryStatus = v
-            var rs = callMod("delivery_module", "rlnState", [])
-            root.rlnState = rs && rs.value ? (rs.value.state || "unknown") : (rs && rs.state ? rs.state : "unknown")
-            if (String(v).indexOf("Connected") >= 0) root.connState = "ready"
+            var cs = Net.unwrap(callMod("delivery_module", "getConnectionStatus", []))
+            if (cs.value) root.deliveryStatus = String(cs.value)
+            root.rlnState = Net.rlnStateName(Net.unwrap(callMod("delivery_module", "rlnState", [])).value)
+            if (root.deliveryStatus.indexOf("Connected") >= 0 && root.deliveryStatus.indexOf("Disconnected") < 0) root.connState = "ready"
+            if (root.cluster < 0 && root.connState === "ready")
+                root.cluster = Net.clusterFromEnr(Net.unwrap(callMod("delivery_module", "getNodeInfo", ["MyENR"])).value)
+            root.reclassify()
         }
     }
-    Component.onCompleted: { bringUp(); loadQueue() }
+    Component.onCompleted: {
+        if (typeof logos !== "undefined" && logos.onModuleEvent) {
+            logos.onModuleEvent("delivery_module", "messagePropagated")
+            logos.onModuleEvent("delivery_module", "messageSent")
+            logos.onModuleEvent("delivery_module", "messageError")
+        }
+        bringUp(); loadQueue()
+    }
 
     // ---- degraded-mode queue (local, persisted) + auto-retry ----
     function _db() {
@@ -108,30 +137,75 @@ Rectangle {
             for (var i = 0; i < root.pending.length; i++) tx.executeSql("INSERT INTO q VALUES(?)", [JSON.stringify(root.pending[i])])
         }) } catch (e) {}
     }
+    // Send one response. Returns delivery's requestId, or "" when it can't go now (then it stays queued).
     function trySend(payload) {
-        if (root.connState !== "ready") return false
+        if (root.connState !== "ready" || !Net.canSend(root.netState)) return ""
         var sealed = callMod("feedback_core", "seal", [JSON.stringify(payload)])
-        if (!sealed || !sealed.ok) return false
+        if (!sealed || !sealed.ok) return ""
         var topic = payload.kind === "questionnaire" ? root.questTopic : root.quickTopic
-        var r = callMod("delivery_module", "send", [topic, sealed.ciphertext_b64])
-        return !!(r && (r.value || r.result) && !(r.error))
+        var r = Net.unwrap(callMod("delivery_module", "send", [topic, sealed.ciphertext_b64]))
+        if (!r.ok || !r.value) return ""
+        var id = String(r.value), m = root.inflight
+        m[id] = { payload: payload, at: Date.now() }
+        root.inflight = m; root.inflightCount = Object.keys(m).length
+        return id
+    }
+    function enqueue(payload) {
+        root.pending.push(payload); root.pendingCount = root.pending.length; root.saveQueue()
+    }
+    function savedNote() {
+        return Net.bannerText(root.netState) || ("Saved. It will send when messaging is ready (" + root.pendingCount + " queued).")
     }
     function submit(payload) {
         payload.v = 1; payload.ts = Date.now(); payload.build = root.appBuild
-        if (root.trySend(payload)) { root.sent = true; root.note = "" }
-        else {
-            root.pending.push(payload); root.pendingCount = root.pending.length; root.saveQueue()
-            root.sent = true
-            root.note = "Saved — will send when messaging is ready (" + root.pendingCount + " queued)."
+        root.sent = true
+        if (root.trySend(payload)) { root.lastSend = "sending"; root.note = "" }
+        else { root.enqueue(payload); root.lastSend = "saved"; root.note = root.savedNote() }
+    }
+    // delivery confirmed it: the message left this node
+    function confirm(id) {
+        var m = root.inflight
+        if (!(id in m)) return
+        delete m[id]; root.inflight = m; root.inflightCount = Object.keys(m).length
+        root.confirmedOnce = true; root.unconfirmed = false; root.reclassify()
+        if (root.lastSend === "sending" || root.lastSend === "unconfirmed") root.lastSend = "sent"
+    }
+    // delivery gave up on it: back to the queue, with the reason
+    function failed(id, reason) {
+        var m = root.inflight
+        if (!(id in m)) return
+        var p = m[id].payload
+        delete m[id]; root.inflight = m; root.inflightCount = Object.keys(m).length
+        root.enqueue(p)
+        if (root.lastSend === "sending") { root.lastSend = "saved"; root.note = "Not sent (" + (reason || "delivery error") + "). Saved; it will retry." }
+    }
+    // No confirmation in time. On a node another app started with RLN on, the gate deferred it: it
+    // never left, so queue it again. Otherwise it may still arrive; never resend it (the Desk would get
+    // it twice), just say it isn't confirmed.
+    function checkInflight() {
+        var m = root.inflight, now = Date.now(), changed = false
+        for (var id in m) {
+            if (now - m[id].at < root.confirmTimeoutMs) continue
+            var p = m[id].payload
+            delete m[id]; changed = true
+            if (root.adopted && Net.rlnGated(root.rlnState)) { root.enqueue(p); root.unconfirmed = true }
+            else root.unconfirmedCount++
+        }
+        if (!changed) return
+        root.inflight = m; root.inflightCount = Object.keys(m).length; root.reclassify()
+        if (root.lastSend === "sending") {
+            if (root.unconfirmed) { root.lastSend = "saved"; root.note = root.savedNote() }
+            else root.lastSend = "unconfirmed"
         }
     }
     function flushQueue() {
-        if (root.pending.length === 0 || root.connState !== "ready") return
+        if (root.pending.length === 0 || root.connState !== "ready" || !Net.canSend(root.netState)) return
+        if (root.netState === "rlnSuspect" && root.inflightCount > 0) return   // wait: is this node really sending?
         var still = []
         for (var i = 0; i < root.pending.length; i++) if (!root.trySend(root.pending[i])) still.push(root.pending[i])
         if (still.length !== root.pending.length) { root.pending = still; root.pendingCount = still.length; root.saveQueue() }
     }
-    Timer { interval: 4000; running: true; repeat: true; onTriggered: root.flushQueue() }
+    Timer { interval: 4000; running: true; repeat: true; onTriggered: { root.checkInflight(); root.flushQueue() } }
 
     // ---- UI ----
     LogosScrollView {
@@ -164,14 +238,30 @@ Rectangle {
                 Item { Layout.fillWidth: true }
                 LogosBadge {
                     Layout.alignment: Qt.AlignVCenter
-                    text:  root.deliveryStatus === "Connected"          ? "Delivery connected"
+                    text:  (root.netState === "wrongNetwork" || root.netState === "rlnBlocked") ? "Can't send"
+                         : root.deliveryStatus === "Connected"          ? "Delivery connected"
                          : root.deliveryStatus === "PartiallyConnected" ? "Delivery connecting…"
                          : root.deliveryStatus === "Disconnected"       ? "Delivery connecting…"
                          :                                                "Delivery starting…"
-                    color: root.deliveryStatus === "Connected"          ? Theme.palette.success
+                    color: (root.netState === "wrongNetwork" || root.netState === "rlnBlocked") ? Theme.palette.error
+                         : root.deliveryStatus === "Connected"          ? Theme.palette.success
                          : root.deliveryStatus === "PartiallyConnected" ? Theme.palette.warning
                          : root.deliveryStatus === "Disconnected"       ? Theme.palette.warning
                          :                                                Theme.palette.textSecondary
+                }
+            }
+
+            // the node can't carry our feedback: say why and what to do (#4)
+            Rectangle {
+                Layout.fillWidth: true; radius: Theme.spacing.radiusSmall
+                color: Theme.palette.surface; border.color: Theme.palette.error; border.width: 1
+                Layout.preferredHeight: netT.implicitHeight + 2 * Theme.spacing.small
+                visible: Net.bannerText(root.netState) !== null
+                LogosText {
+                    id: netT; objectName: "netBanner"
+                    anchors.fill: parent; anchors.margins: Theme.spacing.small
+                    wrapMode: Text.WordWrap; color: Theme.palette.error; font.pixelSize: 12
+                    text: Net.bannerText(root.netState) || ""
                 }
             }
 
@@ -180,11 +270,11 @@ Rectangle {
                 Layout.fillWidth: true; radius: Theme.spacing.radiusSmall
                 color: Theme.palette.surface; border.color: Theme.palette.primary; border.width: 1
                 Layout.preferredHeight: bannerT.implicitHeight + 2 * Theme.spacing.small
-                visible: root.pendingCount > 0
+                visible: root.pendingCount > 0 || root.unconfirmedCount > 0
                 LogosText {
                     id: bannerT; anchors.fill: parent; anchors.margins: Theme.spacing.small
                     wrapMode: Text.WordWrap; color: Theme.palette.primary; font.pixelSize: 12
-                    text: "⏳ " + root.pendingCount + " saved — will send when messaging is ready."
+                    text: "⏳ " + root.pendingCount + " saved, not sent yet." + (root.unconfirmedCount > 0 ? " " + root.unconfirmedCount + " sent but not confirmed." : "")
                 }
             }
 
@@ -251,10 +341,17 @@ Rectangle {
             // ---- confirmation ----
             ColumnLayout {
                 Layout.fillWidth: true; spacing: Theme.spacing.medium; visible: root.sent
-                LogosText { text: "Thanks — your feedback was sent."; font.pixelSize: 18 }
+                LogosText {
+                    objectName: "sendState"
+                    font.pixelSize: 18; wrapMode: Text.WordWrap; Layout.fillWidth: true
+                    text: root.lastSend === "sent"        ? "Thanks, your feedback was sent."
+                        : root.lastSend === "sending"     ? "Sending your feedback…"
+                        : root.lastSend === "unconfirmed" ? "Sent, but not confirmed yet."
+                        :                                   "Saved. Not sent yet."
+                }
                 LogosText { text: root.note; color: Theme.palette.textTertiary; font.pixelSize: 12; wrapMode: Text.WordWrap; Layout.fillWidth: true; visible: root.note.length > 0 }
                 LogosButton { text: "Send another"; variant: LogosButton.Variant.Secondary
-                    onClicked: { qTitle.text=""; qMsg.text=""; qContact.text=""; root.qRating=0; a2.answer=""; a3.answer=""; a4.answer=""; root.note=""; root.sent=false } }
+                    onClicked: { qTitle.text=""; qMsg.text=""; qContact.text=""; root.qRating=0; a2.answer=""; a3.answer=""; a4.answer=""; root.note=""; root.lastSend=""; root.sent=false } }
             }
         }
     }

@@ -13,6 +13,23 @@ Part of a pair:
 
 The always-on collector (Feedback Desk) and the design spec live in `xAlisher/feedback-bc`.
 
+## Network
+
+The app publishes on the **Logos Messaging testnet** (logos.test, cluster 2) with the preset name left
+empty and the network spelled out (`net.js`): delivery_module turns its RLN send gate on for the preset
+*name* `logos.test`, so this keeps sending without an RLN membership until relay validation turns on
+(v0.4 or later).
+
+Basecamp shares one delivery node between apps, and the first app to create it sets its config. If
+another app already started it, Feedback reads the node's cluster (from its ENR) and `rlnState`, and
+tells the user to restart Basecamp and open Feedback first when that node is on another network or
+RLN-gated without a membership. A response counts as sent only when delivery confirms it
+(`messagePropagated` / `messageSent`); anything unconfirmed stays queued or is shown as unconfirmed.
+
+## Tests
+
+`node --test test/` checks the network logic in `net.js` against values captured from live probes.
+
 ## Dependencies
 
 - `feedback_core` (sealing)
@@ -26,6 +43,7 @@ other apps) can open the app with a topic preselected.
 ## Files
 
 - `Main.qml` — the view
+- `net.js` — network config, node detection and send state (no Qt APIs; tested in `test/`)
 - `metadata.json` / `manifest.json` — the `ui_qml` module descriptor (`pluginType: qml`)
 - `feedback.png` — tile icon
 
