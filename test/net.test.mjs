@@ -6,7 +6,7 @@ import vm from 'node:vm';
 
 const src = readFileSync(new URL('../net.js', import.meta.url), 'utf8').replace(/^\.pragma library\s*$/m, '');
 const Net = {};
-vm.runInNewContext(src + '\nthis.Net = { nodeConfig, unwrap, isAlreadyInitialized, clusterFromEnr, rlnStateName, rlnGated, classify, canSend, bannerText };', Net);
+vm.runInNewContext(src + '\nthis.Net = { nodeConfig, unwrap, isAlreadyInitialized, clusterFromEnr, rlnStateName, rlnGated, classify, canSend, bannerText, isLoop };', Net);
 const N = Net.Net;
 
 // ENR the probe node returned on cluster 2 (getNodeInfo "MyENR")
@@ -81,4 +81,20 @@ test('send gating and the user-facing text', () => {
 	assert.equal(N.bannerText('ok'), null);
 	assert.equal(N.bannerText('rlnSuspect'), null);
 	for (const s of ['wrongNetwork', 'rlnBlocked']) assert.ok(!/—/.test(N.bannerText(s)), 'no em dash');
+});
+
+test('restart loop (#6): advised on one node, blocked again on another', () => {
+	const A = '16Uiu2HAm5wEUCLQ1n8f2RWnQfpmhoGMShMpPGTiyaH4M8etMc63D'; // probe: run 1
+	const B = '16Uiu2HAmKs9qVZFmecvwNSDsRAbRRzUMHuNiFPpABZ7NKPcV7ZXX'; // probe: run 2, same data dir
+	assert.equal(N.isLoop('', A), false); // first time: advise
+	assert.equal(N.isLoop(A, A), false); // reopened Feedback, same Basecamp run: keep advising
+	assert.equal(N.isLoop(A, B), true); // restarted and still blocked: a loop
+	assert.equal(N.isLoop(A, ''), false);
+	for (const s of ['wrongNetwork', 'rlnBlocked']) {
+		assert.match(N.bannerText(s, false), /Restart Basecamp and open Feedback first/);
+		assert.doesNotMatch(N.bannerText(s, true), /Restart Basecamp/);
+		assert.match(N.bannerText(s, true), /after a restart.*Your feedback is saved/);
+		assert.ok(!/\u2014/.test(N.bannerText(s, true)));
+	}
+	assert.match(N.bannerText('rlnBlocked', true), /RLN membership/);
 });

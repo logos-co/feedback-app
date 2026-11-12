@@ -111,11 +111,23 @@ function classify(f) {
 
 function canSend(netState) { return netState === "ok" || netState === "rlnSuspect" }
 
-// What we tell the user (null = nothing to say).
-function bannerText(netState) {
+// The user restarted as we advised, and another app still started messaging first (#6).
+// A Basecamp process creates its node once, with a fresh peer id; reopening Feedback in the same
+// process sees the same node. So: advised on one node, blocked again on a different one = a loop,
+// e.g. once Basecamp starts delivery at launch (logos-co/logos-basecamp#275).
+function isLoop(advisedPeer, currentPeer) {
+    return !!advisedPeer && !!currentPeer && advisedPeer !== currentPeer
+}
+
+// What we tell the user (null = nothing to say). afterRestart: restarting already didn't help.
+function bannerText(netState, afterRestart) {
     if (netState === "wrongNetwork")
-        return "Messaging joined a different network (another app started it). Restart Basecamp and open Feedback first. Your feedback is saved and will send then."
+        return afterRestart
+            ? "Messaging is on a different network again after a restart: another app starts it before Feedback can. Feedback can't send from this Basecamp for now. Your feedback is saved."
+            : "Messaging joined a different network (another app started it). Restart Basecamp and open Feedback first. Your feedback is saved and will send then."
     if (netState === "rlnBlocked")
-        return "Another app started messaging with RLN on, and this Basecamp has no RLN membership, so feedback can't be sent. Restart Basecamp and open Feedback first. Your feedback is saved and will send then."
+        return afterRestart
+            ? "Messaging starts with RLN on again after a restart: another app starts it before Feedback can. Feedback can send once this Basecamp has an RLN membership. Your feedback is saved."
+            : "Another app started messaging with RLN on, and this Basecamp has no RLN membership, so feedback can't be sent. Restart Basecamp and open Feedback first. Your feedback is saved and will send then."
     return null
 }

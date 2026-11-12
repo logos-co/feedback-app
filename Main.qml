@@ -38,6 +38,8 @@ Rectangle {
     property bool unconfirmed: false           // a send on a gated node got no confirmation
     property bool confirmedOnce: false         // delivery confirmed one of our sends on this node
     property string netState: "checking"       // ok | checking | wrongNetwork | rlnSuspect | rlnBlocked
+    property string nodePeer: ""               // peer id of a node another app created (new per Basecamp run)
+    property bool afterRestart: false          // we advised a restart, and it didn't help (#6)
     // sends waiting for delivery to confirm them (#3): requestId -> {payload, at}
     property var inflight: ({})
     property int inflightCount: 0
@@ -94,6 +96,21 @@ Rectangle {
     function reclassify() {
         root.netState = Net.classify({ adopted: root.adopted, cluster: root.cluster, rln: root.rlnState,
                                        unconfirmed: root.unconfirmed, confirmed: root.confirmedOnce })
+        root.updateAdvice()
+    }
+    // Remember the node we told the user to restart away from; seeing a different one still blocked
+    // means the restart didn't help, so stop advising it (#6).
+    function updateAdvice() {
+        var blocked = root.netState === "wrongNetwork" || root.netState === "rlnBlocked"
+        if (!blocked) {
+            if (root.netState === "ok") root._kvSet("adviceNode", "")
+            root.afterRestart = false
+            return
+        }
+        if (!root.nodePeer) return
+        var advised = root._kvGet("adviceNode")
+        if (Net.isLoop(advised, root.nodePeer)) root.afterRestart = true
+        else if (!advised) root._kvSet("adviceNode", root.nodePeer)
     }
     Timer {
         interval: 1500; running: true; repeat: true
@@ -104,6 +121,8 @@ Rectangle {
             if (root.deliveryStatus.indexOf("Connected") >= 0 && root.deliveryStatus.indexOf("Disconnected") < 0) root.connState = "ready"
             if (root.cluster < 0 && root.connState === "ready")
                 root.cluster = Net.clusterFromEnr(Net.unwrap(callMod("delivery_module", "getNodeInfo", ["MyENR"])).value)
+            if (root.adopted && !root.nodePeer && root.connState === "ready")
+                root.nodePeer = String(Net.unwrap(callMod("delivery_module", "getNodeInfo", ["MyPeerId"])).value || "")
             root.reclassify()
         }
     }
@@ -130,6 +149,23 @@ Rectangle {
             root.pending = arr; root.pendingCount = arr.length
         }) } catch (e) {}
     }
+    function _kvGet(k) {
+        var db = _db(); if (!db) return ""
+        var v = ""
+        try { db.transaction(function(tx) {
+            tx.executeSql("CREATE TABLE IF NOT EXISTS kv(k TEXT PRIMARY KEY, v TEXT)")
+            var rs = tx.executeSql("SELECT v FROM kv WHERE k = ?", [k])
+            if (rs.rows.length > 0) v = rs.rows.item(0).v || ""
+        }) } catch (e) {}
+        return v
+    }
+    function _kvSet(k, v) {
+        var db = _db(); if (!db) return
+        try { db.transaction(function(tx) {
+            tx.executeSql("CREATE TABLE IF NOT EXISTS kv(k TEXT PRIMARY KEY, v TEXT)")
+            tx.executeSql("INSERT OR REPLACE INTO kv(k, v) VALUES(?, ?)", [k, v])
+        }) } catch (e) {}
+    }
     function saveQueue() {
         var db = _db(); if (!db) return
         try { db.transaction(function(tx) {
@@ -154,7 +190,7 @@ Rectangle {
         root.pending.push(payload); root.pendingCount = root.pending.length; root.saveQueue()
     }
     function savedNote() {
-        return Net.bannerText(root.netState) || ("Saved. It will send when messaging is ready (" + root.pendingCount + " queued).")
+        return Net.bannerText(root.netState, root.afterRestart) || ("Saved. It will send when messaging is ready (" + root.pendingCount + " queued).")
     }
     function submit(payload) {
         payload.v = 1; payload.ts = Date.now(); payload.build = root.appBuild
@@ -256,12 +292,12 @@ Rectangle {
                 Layout.fillWidth: true; radius: Theme.spacing.radiusSmall
                 color: Theme.palette.surface; border.color: Theme.palette.error; border.width: 1
                 Layout.preferredHeight: netT.implicitHeight + 2 * Theme.spacing.small
-                visible: Net.bannerText(root.netState) !== null
+                visible: Net.bannerText(root.netState, root.afterRestart) !== null
                 LogosText {
                     id: netT; objectName: "netBanner"
                     anchors.fill: parent; anchors.margins: Theme.spacing.small
                     wrapMode: Text.WordWrap; color: Theme.palette.error; font.pixelSize: 12
-                    text: Net.bannerText(root.netState) || ""
+                    text: Net.bannerText(root.netState, root.afterRestart) || ""
                 }
             }
 

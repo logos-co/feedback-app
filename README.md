@@ -26,6 +26,19 @@ tells the user to restart Basecamp and open Feedback first when that node is on 
 RLN-gated without a membership. A response counts as sent only when delivery confirms it
 (`messagePropagated` / `messageSent`); anything unconfirmed stays queued or is shown as unconfirmed.
 
+If the user restarts and another app still starts messaging first (for example once Basecamp
+starts delivery at launch, logos-co/logos-basecamp#275), Feedback notices: each Basecamp run creates a
+node with a fresh peer id, so being blocked again on a *different* node means the restart didn't help.
+The banner then stops advising a restart and says what would let Feedback send. (#6)
+
+### Release check
+
+On a Basecamp release that mentions autostart, restoring open apps, or delivery bring-up: launch with
+Chat installed, open nothing, and call `delivery_module.getConnectionStatus`. "Module not connected" or
+"Context not initialized" means nobody owns the node at launch, so "open Feedback first" still works.
+If a node already exists at launch, the loop guard above shows the fallback; consider changing the
+first-time text too.
+
 ## Tests
 
 `node --test test/` checks the network logic in `net.js` against values captured from live probes.
