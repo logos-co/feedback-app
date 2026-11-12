@@ -6,8 +6,9 @@ import vm from 'node:vm';
 
 const src = readFileSync(new URL('../net.js', import.meta.url), 'utf8').replace(/^\.pragma library\s*$/m, '');
 const Net = {};
-vm.runInNewContext(src + '\nthis.Net = { nodeConfig, unwrap, isAlreadyInitialized, clusterFromEnr, rlnStateName, rlnGated, classify, canSend, bannerText, isLoop };', Net);
+vm.runInNewContext(src + '\nthis.Net = { nodeConfig, unwrap, isAlreadyInitialized, clusterFromEnr, rlnStateName, rlnGated, classify, canSend, bannerText, isLoop, pill };', Net);
 const N = Net.Net;
+const j = (o) => JSON.parse(JSON.stringify(o)); // objects from the vm sandbox have another prototype
 
 // ENR the probe node returned on cluster 2 (getNodeInfo "MyENR")
 const ENR_C2 = 'enr:-K24QNRtRffo_rnJP_EQG3P5pPKiAkj7RBp5Z2HZy2OK3tgJE7MfdPn-wd3a-4mgCAcUuoNImIguyOcztVb7-aNHmxMPgmlkgnY0im11bHRpYWRkcnOAgnJzkwACCAAAAAEAAgADAAQABQAGAAeJc2VjcDI1NmsxoQKW6rTiysIQRblYCVu-Kl1HBZRkP1ChgdLskFOqo1RSGIN0Y3CCpgODdWRwguSChXdha3UyDQ';
@@ -60,26 +61,50 @@ test('rlnState: Disabled is open, the rest is gated', () => {
 test('classify: the states from the order tests', () => {
 	// we created it (probe: preset "" -> Disabled, cluster 2)
 	assert.equal(N.classify({ adopted: false, cluster: 2, rln: 'Disabled' }), 'ok');
-	// Feedback first, Chat adopted ours: still ours, still Disabled
-	assert.equal(N.classify({ adopted: false, cluster: 2, rln: 'Disabled' }), 'ok');
-	// Chat first: adopted, cluster 2, RLN Failed -> try once, then blocked when unconfirmed
-	assert.equal(N.classify({ adopted: true, cluster: 2, rln: 'Failed' }), 'rlnSuspect');
-	assert.equal(N.classify({ adopted: true, cluster: 2, rln: 'Failed', unconfirmed: true }), 'rlnBlocked');
+	// Chat first: adopted, cluster 2, RLN on -> warn at once, before any send (manual test 2026-11-12)
+	assert.equal(N.classify({ adopted: true, cluster: 2, rln: 'Failed' }), 'rlnBlocked');
+	assert.equal(N.classify({ adopted: true, cluster: 2, rln: 'Ready' }), 'rlnBlocked');
+	assert.equal(N.classify({ adopted: true, cluster: 2, rln: 'Initializing' }), 'rlnBlocked');
+	// adopted, rlnState not read yet: keep checking
+	assert.equal(N.classify({ adopted: true, cluster: 2, rln: '' }), 'checking');
+	// adopted but RLN-free (Feedback-style config by another app): fine
+	assert.equal(N.classify({ adopted: true, cluster: 2, rln: 'Disabled' }), 'ok');
 	// gated but a send was confirmed (a membership exists): fine
-	assert.equal(N.classify({ adopted: true, cluster: 2, rln: 'Ready', unconfirmed: false, confirmed: true }), 'ok');
+	assert.equal(N.classify({ adopted: true, cluster: 2, rln: 'Ready', confirmed: true }), 'ok');
 	// adopted node on devnet
 	assert.equal(N.classify({ adopted: true, cluster: 3, rln: 'Disabled' }), 'wrongNetwork');
 	assert.equal(N.classify({ adopted: true, cluster: -1, rln: '' }), 'checking');
 });
 
+test('unwrap: every answer shape a Basecamp build returns', () => {
+	assert.deepEqual(j(N.unwrap({ success: true, value: 'Connected', error: null })), { ok: true, value: 'Connected', error: '' });
+	assert.deepEqual(j(N.unwrap({ result: { success: true, value: 'Connected', error: null } })), { ok: true, value: 'Connected', error: '' });
+	assert.deepEqual(j(N.unwrap({ result: 'Connected' })), { ok: true, value: 'Connected', error: '' }); // bare value under result
+	assert.equal(N.unwrap({ result: { state: 'Failed', message: 'x' } }).value.state, 'Failed'); // bare object under result
+	assert.equal(N.unwrap('Connected').value, 'Connected');
+	assert.equal(N.unwrap({ _raw: 'Connected' }).value, 'Connected');
+	assert.equal(N.unwrap({ error: 'Module not connected' }).ok, false);
+	assert.equal(N.unwrap({ result: { error: 'Context already initialized', success: false, value: null } }).error, 'Context already initialized');
+	assert.equal(N.rlnStateName(N.unwrap({ result: { state: 'Disabled', message: '' } }).value), 'Disabled');
+});
+
+test('pill: checking first, then the honest state', () => {
+	assert.deepEqual(j(N.pill('checking', '')), { text: 'Checking delivery…', tone: 'neutral' });
+	assert.deepEqual(j(N.pill('checking', 'Connected')), { text: 'Checking delivery…', tone: 'neutral' });
+	assert.deepEqual(j(N.pill('ok', 'Connected')), { text: 'Delivery connected', tone: 'success' });
+	assert.deepEqual(j(N.pill('ok', 'PartiallyConnected')), { text: 'Delivery connected', tone: 'success' });
+	assert.deepEqual(j(N.pill('ok', 'Disconnected')), { text: 'Delivery reconnecting…', tone: 'warning' });
+	assert.deepEqual(j(N.pill('rlnBlocked', 'Connected')), { text: "Can't send", tone: 'error' });
+	assert.deepEqual(j(N.pill('wrongNetwork', 'Connected')), { text: "Can't send", tone: 'error' });
+});
+
 test('send gating and the user-facing text', () => {
 	assert.equal(N.canSend('ok'), true);
-	assert.equal(N.canSend('rlnSuspect'), true);
 	for (const s of ['checking', 'wrongNetwork', 'rlnBlocked']) assert.equal(N.canSend(s), false);
-	assert.match(N.bannerText('wrongNetwork'), /different network.*Restart Basecamp and open Feedback first/);
-	assert.match(N.bannerText('rlnBlocked'), /RLN on.*no RLN membership.*Restart Basecamp and open Feedback first/);
+	assert.match(N.bannerText('wrongNetwork'), /different network.*Close that app, quit Basecamp, start it again and open Feedback first/);
+	assert.match(N.bannerText('rlnBlocked'), /RLN on.*no RLN membership.*Close that app, quit Basecamp, start it again and open Feedback first/);
 	assert.equal(N.bannerText('ok'), null);
-	assert.equal(N.bannerText('rlnSuspect'), null);
+	assert.equal(N.bannerText('checking'), null);
 	for (const s of ['wrongNetwork', 'rlnBlocked']) assert.ok(!/—/.test(N.bannerText(s)), 'no em dash');
 });
 
@@ -91,8 +116,8 @@ test('restart loop (#6): advised on one node, blocked again on another', () => {
 	assert.equal(N.isLoop(A, B), true); // restarted and still blocked: a loop
 	assert.equal(N.isLoop(A, ''), false);
 	for (const s of ['wrongNetwork', 'rlnBlocked']) {
-		assert.match(N.bannerText(s, false), /Restart Basecamp and open Feedback first/);
-		assert.doesNotMatch(N.bannerText(s, true), /Restart Basecamp/);
+		assert.match(N.bannerText(s, false), /quit Basecamp, start it again and open Feedback first/);
+		assert.doesNotMatch(N.bannerText(s, true), /start it again|Restart Basecamp/);
 		assert.match(N.bannerText(s, true), /after a restart.*Your feedback is saved/);
 		assert.ok(!/\u2014/.test(N.bannerText(s, true)));
 	}

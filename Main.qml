@@ -37,7 +37,8 @@ Rectangle {
     property int cluster: -1                   // from the node's ENR; 2 = logos.test
     property bool unconfirmed: false           // a send on a gated node got no confirmation
     property bool confirmedOnce: false         // delivery confirmed one of our sends on this node
-    property string netState: "checking"       // ok | checking | wrongNetwork | rlnSuspect | rlnBlocked
+    property string netState: "checking"       // ok | checking | wrongNetwork | rlnBlocked
+    property bool _loggedShapes: false         // log the first raw delivery answers once (shapes differ per Basecamp build)
     property string nodePeer: ""               // peer id of a node another app created (new per Basecamp run)
     property bool afterRestart: false          // we advised a restart, and it didn't help (#6)
     // sends waiting for delivery to confirm them (#3): requestId -> {payload, at}
@@ -91,12 +92,17 @@ Rectangle {
     function bringUp() {
         var c = Net.unwrap(callMod("delivery_module", "createNode", [root.nodeCfg]))
         if (!c.ok && Net.isAlreadyInitialized(c.error)) root.adopted = true   // someone else's config
+        console.log("[feedback] createNode: " + (c.ok ? "created our node (logos.test, no RLN gate)" : (root.adopted ? "another app owns the node" : "failed: " + c.error)))
         callMod("delivery_module", "start", [])
     }
     function reclassify() {
+        var before = root.netState
         root.netState = Net.classify({ adopted: root.adopted, cluster: root.cluster, rln: root.rlnState,
                                        unconfirmed: root.unconfirmed, confirmed: root.confirmedOnce })
         root.updateAdvice()
+        if (root.netState !== before)
+            console.log("[feedback] delivery: " + root.netState + " (adopted=" + root.adopted + ", cluster=" + root.cluster
+                        + ", rln=" + (root.rlnState || "?") + ", status=" + root.deliveryStatus + (root.afterRestart ? ", after restart" : "") + ")")
     }
     // Remember the node we told the user to restart away from; seeing a different one still blocked
     // means the restart didn't help, so stop advising it (#6).
@@ -115,9 +121,15 @@ Rectangle {
     Timer {
         interval: 1500; running: true; repeat: true
         onTriggered: {
-            var cs = Net.unwrap(callMod("delivery_module", "getConnectionStatus", []))
-            if (cs.value) root.deliveryStatus = String(cs.value)
-            root.rlnState = Net.rlnStateName(Net.unwrap(callMod("delivery_module", "rlnState", [])).value)
+            var csRaw = callMod("delivery_module", "getConnectionStatus", [])
+            var rsRaw = callMod("delivery_module", "rlnState", [])
+            if (!root._loggedShapes && csRaw) {
+                root._loggedShapes = true
+                console.log("[feedback] delivery answers: getConnectionStatus=" + JSON.stringify(csRaw) + " rlnState=" + JSON.stringify(rsRaw))
+            }
+            var cs = Net.unwrap(csRaw)
+            if (cs.ok && cs.value) root.deliveryStatus = String(cs.value)
+            root.rlnState = Net.rlnStateName(Net.unwrap(rsRaw).value)
             if (root.deliveryStatus.indexOf("Connected") >= 0 && root.deliveryStatus.indexOf("Disconnected") < 0) root.connState = "ready"
             if (root.cluster < 0 && root.connState === "ready")
                 root.cluster = Net.clusterFromEnr(Net.unwrap(callMod("delivery_module", "getNodeInfo", ["MyENR"])).value)
@@ -236,7 +248,6 @@ Rectangle {
     }
     function flushQueue() {
         if (root.pending.length === 0 || root.connState !== "ready" || !Net.canSend(root.netState)) return
-        if (root.netState === "rlnSuspect" && root.inflightCount > 0) return   // wait: is this node really sending?
         var still = []
         for (var i = 0; i < root.pending.length; i++) if (!root.trySend(root.pending[i])) still.push(root.pending[i])
         if (still.length !== root.pending.length) { root.pending = still; root.pendingCount = still.length; root.saveQueue() }
@@ -273,17 +284,14 @@ Rectangle {
                 }
                 Item { Layout.fillWidth: true }
                 LogosBadge {
+                    objectName: "deliveryPill"
                     Layout.alignment: Qt.AlignVCenter
-                    text:  (root.netState === "wrongNetwork" || root.netState === "rlnBlocked") ? "Can't send"
-                         : root.deliveryStatus === "Connected"          ? "Delivery connected"
-                         : root.deliveryStatus === "PartiallyConnected" ? "Delivery connecting…"
-                         : root.deliveryStatus === "Disconnected"       ? "Delivery connecting…"
-                         :                                                "Delivery starting…"
-                    color: (root.netState === "wrongNetwork" || root.netState === "rlnBlocked") ? Theme.palette.error
-                         : root.deliveryStatus === "Connected"          ? Theme.palette.success
-                         : root.deliveryStatus === "PartiallyConnected" ? Theme.palette.warning
-                         : root.deliveryStatus === "Disconnected"       ? Theme.palette.warning
-                         :                                                Theme.palette.textSecondary
+                    readonly property var p: Net.pill(root.netState, root.deliveryStatus)
+                    text: p.text
+                    color: p.tone === "success" ? Theme.palette.success
+                         : p.tone === "warning" ? Theme.palette.warning
+                         : p.tone === "error"   ? Theme.palette.error
+                         :                        Theme.palette.textSecondary
                 }
             }
 

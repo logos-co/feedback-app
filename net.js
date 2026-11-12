@@ -24,11 +24,20 @@ function nodeConfig() {
     })
 }
 
-// A module call's answer, as Main.qml's callMod returns it: {success, value, error} (possibly under
-// result), or null. Returns {ok, value, error}.
+// A module call's answer, as Main.qml's callMod returns it, in any shape a Basecamp build uses:
+// {success, value, error}; that object under "result"; {"result": <bare value>}; a bare value; or
+// {_raw} when it wasn't JSON. Returns {ok, value, error}. (0.3.2 and the newer builds differ.)
+function isResultObj(o) { return o !== null && typeof o === "object" && ("success" in o || "value" in o || "error" in o) }
 function unwrap(r) {
     if (r === null || r === undefined) return { ok: false, value: null, error: "no answer" }
-    var x = (r.result !== undefined && r.result !== null && typeof r.result === "object" && ("success" in r.result || "value" in r.result)) ? r.result : r
+    if (typeof r !== "object") return { ok: true, value: r, error: "" }
+    if ("_raw" in r) return { ok: true, value: r._raw, error: "" }
+    var x = r
+    if (!isResultObj(x) && ("result" in x)) {
+        if (isResultObj(x.result)) x = x.result
+        else return { ok: true, value: x.result, error: "" }
+    }
+    if (!isResultObj(x)) return { ok: true, value: x, error: "" }
     var err = x.error ? String(x.error) : ""
     var ok = x.success === undefined ? !err : (x.success === true && !err)
     return { ok: ok, value: x.value !== undefined ? x.value : null, error: err }
@@ -99,17 +108,21 @@ function rlnGated(state) { return state !== "" && state !== "Disabled" }
 //   adopted     : createNode said "already initialized" (another app owns the node's config)
 //   cluster     : from the ENR (-1 unknown)
 //   rln         : rlnState name ("" unknown)
-//   unconfirmed : a send on this node got no confirmation in time
 //   confirmed   : delivery confirmed one of our sends on this node (so it does send, e.g. a membership)
-// -> "ok" | "checking" | "wrongNetwork" | "rlnSuspect" | "rlnBlocked"
+// -> "ok" | "checking" | "wrongNetwork" | "rlnBlocked"
+// An RLN-gated node another app created is reported at once, before any send: without a membership
+// (there is no self-serve one yet) every send would stall silently.
 function classify(f) {
     if (f.cluster === undefined || f.cluster < 0) return "checking"
     if (f.cluster !== TESTNET_CLUSTER) return "wrongNetwork"
-    if (f.adopted && rlnGated(f.rln) && !f.confirmed) return f.unconfirmed ? "rlnBlocked" : "rlnSuspect"
+    if (f.adopted) {
+        if (f.rln === undefined || f.rln === "") return "checking"
+        if (rlnGated(f.rln) && !f.confirmed) return "rlnBlocked"
+    }
     return "ok"
 }
 
-function canSend(netState) { return netState === "ok" || netState === "rlnSuspect" }
+function canSend(netState) { return netState === "ok" }
 
 // The user restarted as we advised, and another app still started messaging first (#6).
 // A Basecamp process creates its node once, with a fresh peer id; reopening Feedback in the same
@@ -124,10 +137,20 @@ function bannerText(netState, afterRestart) {
     if (netState === "wrongNetwork")
         return afterRestart
             ? "Messaging is on a different network again after a restart: another app starts it before Feedback can. Feedback can't send from this Basecamp for now. Your feedback is saved."
-            : "Messaging joined a different network (another app started it). Restart Basecamp and open Feedback first. Your feedback is saved and will send then."
+            : "Another app (for example Chat) started messaging on a different network, so Feedback can't reach the testnet. Close that app, quit Basecamp, start it again and open Feedback first. Your feedback is saved and will send then."
     if (netState === "rlnBlocked")
         return afterRestart
             ? "Messaging starts with RLN on again after a restart: another app starts it before Feedback can. Feedback can send once this Basecamp has an RLN membership. Your feedback is saved."
-            : "Another app started messaging with RLN on, and this Basecamp has no RLN membership, so feedback can't be sent. Restart Basecamp and open Feedback first. Your feedback is saved and will send then."
+            : "Another app (for example Chat) started messaging with RLN on, and this Basecamp has no RLN membership, so Feedback can't send. Close that app, quit Basecamp, start it again and open Feedback first. Your feedback is saved and will send then."
     return null
+}
+
+// The status pill: checking until the node is classified, then the honest state (#4).
+// -> {text, tone} with tone "neutral" | "success" | "warning" | "error"
+function pill(netState, deliveryStatus) {
+    if (netState === "wrongNetwork" || netState === "rlnBlocked") return { text: "Can't send", tone: "error" }
+    if (netState !== "ok") return { text: "Checking delivery…", tone: "neutral" }
+    var s = String(deliveryStatus || "")
+    if (s.indexOf("Connected") >= 0 && s.indexOf("Disconnected") < 0) return { text: "Delivery connected", tone: "success" }
+    return { text: "Delivery reconnecting…", tone: "warning" }
 }
