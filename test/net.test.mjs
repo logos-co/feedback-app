@@ -74,6 +74,12 @@ test('classify: the states from the order tests', () => {
 	// adopted node on devnet
 	assert.equal(N.classify({ adopted: true, cluster: 3, rln: 'Disabled' }), 'wrongNetwork');
 	assert.equal(N.classify({ adopted: true, cluster: -1, rln: '' }), 'checking');
+	// delivery stopped answering (crashed after a second start(), 2026-11-12): say so instead of checking forever
+	assert.equal(N.classify({ adopted: true, cluster: -1, rln: '', noAnswer: true }), 'unreachable');
+	assert.equal(N.classify({ adopted: false, cluster: 2, rln: 'Disabled', noAnswer: true }), 'unreachable');
+	assert.equal(N.canSend('unreachable'), false);
+	assert.match(N.bannerText('unreachable'), /isn't answering.*quit Basecamp, start it again and open Feedback first/);
+	assert.deepEqual(j(N.pill('unreachable', '')), { text: "Can't send", tone: 'error' });
 });
 
 test('unwrap: every answer shape a Basecamp build returns', () => {

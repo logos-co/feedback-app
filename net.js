@@ -109,10 +109,12 @@ function rlnGated(state) { return state !== "" && state !== "Disabled" }
 //   cluster     : from the ENR (-1 unknown)
 //   rln         : rlnState name ("" unknown)
 //   confirmed   : delivery confirmed one of our sends on this node (so it does send, e.g. a membership)
-// -> "ok" | "checking" | "wrongNetwork" | "rlnBlocked"
+//   noAnswer    : delivery hasn't answered a status call for a while (crashed, or never started)
+// -> "ok" | "checking" | "wrongNetwork" | "rlnBlocked" | "unreachable"
 // An RLN-gated node another app created is reported at once, before any send: without a membership
 // (there is no self-serve one yet) every send would stall silently.
 function classify(f) {
+    if (f.noAnswer) return "unreachable"
     if (f.cluster === undefined || f.cluster < 0) return "checking"
     if (f.cluster !== TESTNET_CLUSTER) return "wrongNetwork"
     if (f.adopted) {
@@ -138,6 +140,8 @@ function bannerText(netState, afterRestart) {
         return afterRestart
             ? "Messaging is on a different network again after a restart: another app starts it before Feedback can. Feedback can't send from this Basecamp for now. Your feedback is saved."
             : "Another app (for example Chat) started messaging on a different network, so Feedback can't reach the testnet. Close that app, quit Basecamp, start it again and open Feedback first. Your feedback is saved and will send then."
+    if (netState === "unreachable")
+        return "Messaging isn't answering. If another app (for example Chat) started it, it may have stopped. Close that app, quit Basecamp, start it again and open Feedback first. Your feedback is saved and will send then."
     if (netState === "rlnBlocked")
         return afterRestart
             ? "Messaging starts with RLN on again after a restart: another app starts it before Feedback can. Feedback can send once this Basecamp has an RLN membership. Your feedback is saved."
@@ -148,7 +152,7 @@ function bannerText(netState, afterRestart) {
 // The status pill: checking until the node is classified, then the honest state (#4).
 // -> {text, tone} with tone "neutral" | "success" | "warning" | "error"
 function pill(netState, deliveryStatus) {
-    if (netState === "wrongNetwork" || netState === "rlnBlocked") return { text: "Can't send", tone: "error" }
+    if (netState === "wrongNetwork" || netState === "rlnBlocked" || netState === "unreachable") return { text: "Can't send", tone: "error" }
     if (netState !== "ok") return { text: "Checking delivery…", tone: "neutral" }
     var s = String(deliveryStatus || "")
     if (s.indexOf("Connected") >= 0 && s.indexOf("Disconnected") < 0) return { text: "Delivery connected", tone: "success" }

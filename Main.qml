@@ -38,6 +38,8 @@ Rectangle {
     property bool unconfirmed: false           // a send on a gated node got no confirmation
     property bool confirmedOnce: false         // delivery confirmed one of our sends on this node
     property string netState: "checking"       // ok | checking | wrongNetwork | rlnBlocked
+    property double lastAnswerAt: Date.now()   // last time delivery answered a status call
+    readonly property int noAnswerMs: 30000
     property bool _loggedShapes: false         // log the first raw delivery answers once (shapes differ per Basecamp build)
     property string nodePeer: ""               // peer id of a node another app created (new per Basecamp run)
     property bool afterRestart: false          // we advised a restart, and it didn't help (#6)
@@ -93,11 +95,15 @@ Rectangle {
         var c = Net.unwrap(callMod("delivery_module", "createNode", [root.nodeCfg]))
         if (!c.ok && Net.isAlreadyInitialized(c.error)) root.adopted = true   // someone else's config
         console.log("[feedback] createNode: " + (c.ok ? "created our node (logos.test, no RLN gate)" : (root.adopted ? "another app owns the node" : "failed: " + c.error)))
-        callMod("delivery_module", "start", [])
+        // Start only a node we created. Its owner starts an adopted one; a second start() while the
+        // owner's is still running crashes delivery (nim-libp2p quictransport, Basecamp 0.3.2 +
+        // delivery 0.3.3, Chat opened 2-4 s before Feedback), taking messaging down for every app.
+        if (!root.adopted) callMod("delivery_module", "start", [])
     }
     function reclassify() {
         var before = root.netState
         root.netState = Net.classify({ adopted: root.adopted, cluster: root.cluster, rln: root.rlnState,
+                                       noAnswer: Date.now() - root.lastAnswerAt > root.noAnswerMs,
                                        unconfirmed: root.unconfirmed, confirmed: root.confirmedOnce })
         root.updateAdvice()
         if (root.netState !== before)
@@ -107,7 +113,7 @@ Rectangle {
     // Remember the node we told the user to restart away from; seeing a different one still blocked
     // means the restart didn't help, so stop advising it (#6).
     function updateAdvice() {
-        var blocked = root.netState === "wrongNetwork" || root.netState === "rlnBlocked"
+        var blocked = root.netState === "wrongNetwork" || root.netState === "rlnBlocked"   // not "unreachable": a restart is the fix there
         if (!blocked) {
             if (root.netState === "ok") root._kvSet("adviceNode", "")
             root.afterRestart = false
@@ -128,7 +134,7 @@ Rectangle {
                 console.log("[feedback] delivery answers: getConnectionStatus=" + JSON.stringify(csRaw) + " rlnState=" + JSON.stringify(rsRaw))
             }
             var cs = Net.unwrap(csRaw)
-            if (cs.ok && cs.value) root.deliveryStatus = String(cs.value)
+            if (cs.ok && cs.value) { root.deliveryStatus = String(cs.value); root.lastAnswerAt = Date.now() }
             root.rlnState = Net.rlnStateName(Net.unwrap(rsRaw).value)
             if (root.deliveryStatus.indexOf("Connected") >= 0 && root.deliveryStatus.indexOf("Disconnected") < 0) root.connState = "ready"
             if (root.cluster < 0 && root.connState === "ready")
