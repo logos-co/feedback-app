@@ -20,7 +20,7 @@ Rectangle {
     readonly property string quickTopic: "/logos-feedback/1/quick/json"
     readonly property string questTopic: "/logos-feedback/1/questionnaire/json"
     readonly property var topics: ["home","app","package-manager","node","wallet","delivery","messaging","onboarding","other"]
-    readonly property string appBuild: "0.2.0"
+    readonly property string appBuild: "0.2.1"
     readonly property string nodeCfg: Net.nodeConfig()   // logos.test spelled out, no RLN send gate (#2)
     readonly property int confirmTimeoutMs: 60000
 

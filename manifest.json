@@ -1,6 +1,6 @@
 {
   "name": "feedback_ui",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "type": "ui_qml",
   "author": "xAlisher",
   "description": "Send feedback on Basecamp, sealed to the Feedback Desk over the Logos Messaging testnet.",
