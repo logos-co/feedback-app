@@ -24,6 +24,23 @@ Rectangle {
     readonly property string nodeCfg: Net.nodeConfig()   // logos.test spelled out, no RLN send gate (#2)
     readonly property int confirmTimeoutMs: 60000
 
+    // ---- privacy + anti-scam copy (shared by both forms and the confirmation) ----
+    // No environment is auto-attached: we ask the user to include versions when it's a bug (below).
+    readonly property string privacyLine: "Your feedback goes to our private Discord channel, visible to the Logos team. If you're reporting a bug, include your OS, Basecamp and app/module versions. Please don't include any personal data. We'll never DM you about your feedback."
+    readonly property string shareLabel: "I'm OK if this feedback is discussed in a public channel"
+    readonly property string antiScamLine: "We'll never DM you about your feedback."
+    property bool publicShare: false            // opt-in flag; a flag for the team only, nothing is sent elsewhere
+    property string sentRef: ""                 // the reference code shown after a submit
+
+    // A short, random reference code (FB-XXXX). Random only — never derived from any user, device or
+    // node identifier. Lets the team quote it when reposting, so a user recognises their own feedback.
+    function genRef() {
+        var a = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"   // no ambiguous 0/O/1/I
+        var s = ""
+        for (var i = 0; i < 4; i++) s += a.charAt(Math.floor(Math.random() * a.length))
+        return "FB-" + s
+    }
+
     // ---- responsive ----
     readonly property bool compact: width < 600
     readonly property int formW: Math.min(width - 2 * Theme.spacing.xlarge, 560)
@@ -211,7 +228,11 @@ Rectangle {
         return Net.bannerText(root.netState, root.afterRestart) || ("Saved. It will send when messaging is ready (" + root.pendingCount + " queued).")
     }
     function submit(payload) {
-        payload.v = 1; payload.ts = Date.now(); payload.build = root.appBuild
+        payload.v = 1; payload.ts = Date.now()
+        payload.build = root.appBuild            // the feedback app's own version (no environment auto-attached)
+        payload.public_share = root.publicShare  // opt-in team flag (#2)
+        payload.ref = root.genRef()              // reference code (#4)
+        root.sentRef = payload.ref
         root.sent = true
         if (root.trySend(payload)) { root.lastSend = "sending"; root.note = "" }
         else { root.enqueue(payload); root.lastSend = "saved"; root.note = root.savedNote() }
@@ -350,14 +371,12 @@ Rectangle {
                     wrapMode: TextArea.Wrap
                     onTextChanged: if (text.length > 2000) text = text.slice(0, 2000) }
                 LogosText { text: qMsg.text.length + " / 2000"; color: Theme.palette.textTertiary; font.pixelSize: 11; Layout.alignment: Qt.AlignRight }
-                LogosTextField { id: qContact; Layout.fillWidth: true; placeholderText: "Contact (optional)"
-                    onTextChanged: if (text.length > 200) text = text.slice(0, 200) }
-                LogosText { text: "Only the Logos team can read your response."; color: Theme.palette.textTertiary; font.pixelSize: 11; wrapMode: Text.WordWrap; Layout.fillWidth: true }
+                SubmitExtras {}
                 LogosButton {
                     Layout.fillWidth: true; variant: LogosButton.Variant.Primary
                     text: "Send"
                     enabled: root.connState !== "connecting" && (qTitle.text.length > 0 || qMsg.text.length > 0)
-                    onClicked: root.submit({ kind:"quick", title:qTitle.text, topic:root.topics[qTopic.currentIndex], message:qMsg.text, contact:qContact.text })
+                    onClicked: root.submit({ kind:"quick", title:qTitle.text, topic:root.topics[qTopic.currentIndex], message:qMsg.text })
                 }
             }
 
@@ -380,6 +399,7 @@ Rectangle {
                 QQ { id: a2; prompt: "2. What has Basecamp been useful for?" }
                 QQ { id: a3; prompt: "3. Which modules/apps are you most excited about?" }
                 QQ { id: a4; prompt: "4. One thing you'd improve right now?" }
+                SubmitExtras {}
                 LogosButton {
                     Layout.fillWidth: true; variant: LogosButton.Variant.Primary
                     text: "Submit"
@@ -400,8 +420,27 @@ Rectangle {
                         :                                   "Saved. Not sent yet."
                 }
                 LogosText { text: root.note; color: Theme.palette.textTertiary; font.pixelSize: 12; wrapMode: Text.WordWrap; Layout.fillWidth: true; visible: root.note.length > 0 }
+                // reference code (#4): quote it if the team reposts your feedback publicly
+                Rectangle {
+                    Layout.fillWidth: true; radius: Theme.spacing.radiusSmall
+                    color: Theme.palette.surface; border.color: Theme.palette.border; border.width: 1
+                    Layout.preferredHeight: refCol.implicitHeight + 2 * Theme.spacing.small
+                    visible: root.sentRef.length > 0
+                    ColumnLayout {
+                        id: refCol
+                        anchors.fill: parent; anchors.margins: Theme.spacing.small; spacing: 2
+                        LogosText { text: "Your reference"; color: Theme.palette.textTertiary; font.pixelSize: 11; Layout.fillWidth: true }
+                        LogosText { objectName: "refCode"; text: root.sentRef; font.pixelSize: 18; font.weight: Theme.typography.weightBold; Layout.fillWidth: true }
+                    }
+                }
+                // anti-scam note (#3): also covers the reference code
+                LogosText {
+                    objectName: "antiScamConfirm"
+                    text: root.antiScamLine + " We'll never ask you for your reference code."
+                    color: Theme.palette.warning; font.pixelSize: 12; wrapMode: Text.WordWrap; Layout.fillWidth: true
+                }
                 LogosButton { text: "Send another"; variant: LogosButton.Variant.Secondary
-                    onClicked: { qTitle.text=""; qMsg.text=""; qContact.text=""; root.qRating=0; a2.answer=""; a3.answer=""; a4.answer=""; root.note=""; root.lastSend=""; root.sent=false } }
+                    onClicked: { qTitle.text=""; qMsg.text=""; root.qRating=0; a2.answer=""; a3.answer=""; a4.answer=""; root.note=""; root.lastSend=""; root.sentRef=""; root.publicShare=false; root.sent=false } }
             }
         }
     }
@@ -414,5 +453,27 @@ Rectangle {
         LogosText { text: qq.prompt; wrapMode: Text.WordWrap; Layout.fillWidth: true }
         LogosTextArea { id: ta; Layout.fillWidth: true; Layout.minimumHeight: 76; wrapMode: TextArea.Wrap
             onTextChanged: if (text.length > 1000) text = text.slice(0, 1000) }
+    }
+
+    // Shared tail for both forms (#2, #3, #5): what gets auto-attached, the privacy note + opt-in
+    // sharing flag, and the anti-scam note by the submit button. One source of truth (root.publicShare).
+    component SubmitExtras: ColumnLayout {
+        Layout.fillWidth: true; spacing: Theme.spacing.small
+        LogosText { text: root.privacyLine; color: Theme.palette.textSecondary; font.pixelSize: 12; wrapMode: Text.WordWrap; Layout.fillWidth: true }
+        LogosCheckbox {
+            objectName: "shareCheckbox"
+            Layout.fillWidth: true
+            checked: root.publicShare
+            onToggled: root.publicShare = checked
+            // override the default single-line label so the long text wraps at phone width
+            contentItem: LogosText {
+                text: root.shareLabel
+                wrapMode: Text.WordWrap
+                font.pixelSize: Theme.typography.primaryText
+                color: Theme.palette.text
+                verticalAlignment: Text.AlignVCenter
+                leftPadding: 24 + Theme.spacing.small   // room for the 24px indicator + spacing
+            }
+        }
     }
 }

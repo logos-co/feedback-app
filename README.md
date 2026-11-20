@@ -1,11 +1,34 @@
 # feedback_ui
 
 The Basecamp **Feedback app**: send feedback on Basecamp from inside Basecamp. Two forms, a quick
-report (title, topic, message, optional contact) and a short questionnaire. Built with the Logos
-design system; responsive at 390 / 700 / 1280.
+report (title, topic, message) and a short questionnaire. Built with the Logos design system;
+responsive at 390 / 700 / 1280.
 
 Each response is sealed by **feedback_core** (anonymous `crypto_box_seal` to the Feedback Desk) and
 published over **Logos Messaging**. The sender stays anonymous; only the Desk can open a response.
+
+## Privacy
+
+No contact details are collected. Asking for them would make anyone who mentions their feedback a
+target for a fake "support desk" scam, so the field was removed end to end (feedback-bc#21). Both
+forms carry:
+
+- a privacy + anti-scam note: *"Your feedback goes to our private Discord channel, visible to the
+  Logos team. If you're reporting a bug, include your OS, Basecamp and app/module versions. Please
+  don't include any personal data. We'll never DM you about your feedback."*
+- an opt-in checkbox, **unchecked by default** ("I'm OK if this feedback is discussed in a public
+  channel") — a flag for the team only; every response still goes to the same private Discord channel
+  either way, and nothing is sent anywhere else automatically.
+
+No environment is auto-attached: the user types any OS / Basecamp / app / module versions into the
+message when they're reporting a bug (the note asks for it). Nothing identifying is ever collected:
+no hostname, username, IP, node ID, keys, wallet addresses or file paths. The only field the app adds
+is its own version, so feedback ties to a release.
+
+After a submit the confirmation shows a short random **reference code** (e.g. `FB-7K3Q`), included in
+the Desk's channel message so the team can quote it when reposting — never asked for, not derived from
+any user, device or node identifier, and the anti-scam note on the confirmation says the team will
+never ask for it.
 
 Part of a pair:
 - **feedback-app** (this repo): the QML UI (`feedback_ui`).
